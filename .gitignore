@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Test photos — not for the repo
+samples/
+
+# Node / UI (ui/dist is rebuilt from source)
+ui/node_modules/
+ui/dist/
+
+# Editors
+.DS_Store
+.idea/
+.vscode/
+*.swp

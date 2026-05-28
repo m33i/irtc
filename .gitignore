@@ -10,9 +10,6 @@ build/
 venv/
 .env
 
-# Test photos — not for the repo
-samples/
-
 # Node / UI (ui/dist is rebuilt from source)
 ui/node_modules/
 ui/dist/

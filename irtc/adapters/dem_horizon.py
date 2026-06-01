@@ -33,6 +33,7 @@ class DemHorizonMatcher:
     def extract_profile(
         self, image_path: Path, sky_mask: np.ndarray,
     ) -> HorizonProfile:
+        import cv2
         img = Image.open(image_path).convert("RGB")
         w, h = img.size
         if sky_mask.shape[:2] != (h, w):
@@ -41,13 +42,13 @@ class DemHorizonMatcher:
                 dtype=bool,
             )
 
-        horizon_row = np.full(w, -1, dtype=np.float32)
+        seg_horizon = np.full(w, -1, dtype=np.float32)
         for col in range(w):
             sky_rows = np.where(sky_mask[:, col])[0]
             if len(sky_rows) > 0:
-                horizon_row[col] = float(sky_rows[-1])
+                seg_horizon[col] = float(sky_rows[-1])
 
-        valid = horizon_row >= 0
+        valid = seg_horizon >= 0
         valid_cols = np.where(valid)[0]
         if len(valid_cols) < 10:
             return HorizonProfile(
@@ -55,6 +56,22 @@ class DemHorizonMatcher:
                 azimuth_deg=np.array([]),
                 confidence=0.0,
             )
+
+        gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY).astype(np.float32)
+        sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        neg_grad = np.clip(-sobel_y, 0, None)
+
+        horizon_row = seg_horizon.copy()
+        for col in range(w):
+            if not valid[col]:
+                continue
+            sh = int(seg_horizon[col])
+            lo = sh
+            hi = min(h - 1, sh + 200)
+            window = neg_grad[lo:hi + 1, col]
+            if window.max() > 10:
+                peak = lo + int(np.argmax(window))
+                horizon_row[col] = float(peak)
 
         vfov_deg = 50.0
         cy = h / 2.0
@@ -229,17 +246,19 @@ class DemHorizonMatcher:
         horizon_el = np.full(n_az, -np.inf, dtype=np.float32)
 
         max_dist_m = self.search_radius_km * 1000.0
+        min_dist_m = step * 111000.0 * 0.8
         earth_r = 6371000.0
 
         for az_idx in range(n_az):
-            az_rad = math.radians(float(az_idx))
+            az_rad = math.radians(float(az_idx * 2))
             dx = math.sin(az_rad)
             dy = math.cos(az_rad)
-            step_m = 100.0
+            step_m = 200.0
+            s_start = max(1, int(min_dist_m / step_m))
             n_steps = int(max_dist_m / step_m)
 
             best_angle = -np.inf
-            for s in range(1, n_steps + 1, 10):
+            for s in range(s_start, n_steps + 1, 5):
                 dist_m = s * step_m
                 dlat = math.degrees(dist_m * dy / earth_r)
                 dlon = math.degrees(dist_m * dx / (earth_r * math.cos(math.radians(center_lat + dlat / 2))))

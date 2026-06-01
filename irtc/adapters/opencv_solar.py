@@ -1,6 +1,9 @@
 """OpenCV solar / night estimator. Implements SolarEstimatorPort."""
 
 from __future__ import annotations
+import math
+import datetime
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -41,19 +44,31 @@ class OpenCVSolarEstimator:
 
         sun_visible, sun_x, sun_y = self._detect_sun(img_bgr, use_crop)
         color_temp, time_of_day, hour_range = self._sky_color_analysis(img_bgr, use_crop)
-        elevation_deg = self._estimate_elevation(sun_x, sun_y, h, time_of_day)
-        hemisphere, lat_range = self._estimate_lat(elevation_deg, time_of_day)
-        season_hint = self._estimate_season(color_temp, elevation_deg)
+        elevation_deg = self._estimate_elevation(sun_x, sun_y, h, time_of_day, use_crop, img_bgr)
+        azimuth_deg = self._estimate_azimuth(sun_x, w) if sun_x is not None else None
+
+        bt = self._backtrack_location(elevation_deg, hour_range, time_of_day)
+        if bt is not None:
+            hemisphere, lat_range, season_hint, estimated_lat, lat_conf = bt
+        else:
+            hemisphere = self._fallback_hemisphere(elevation_deg, time_of_day)
+            lat_range = self._fallback_lat_range(elevation_deg, time_of_day)
+            season_hint = self._fallback_season(color_temp, elevation_deg)
+            estimated_lat = None
+            lat_conf = None
 
         return SolarEstimate(
-            sun_visible  = sun_visible,
-            elevation_deg= elevation_deg,
-            time_of_day  = time_of_day,
-            hour_range   = hour_range,
-            hemisphere   = hemisphere,
-            lat_range    = lat_range,
-            season_hint  = season_hint,
-            confidence   = self._confidence(sun_visible, elevation_deg, color_temp),
+            sun_visible   = sun_visible,
+            elevation_deg = elevation_deg,
+            time_of_day   = time_of_day,
+            hour_range    = hour_range,
+            hemisphere    = hemisphere,
+            lat_range     = lat_range,
+            season_hint   = season_hint,
+            confidence    = self._confidence(sun_visible, elevation_deg, color_temp, lat_conf),
+            azimuth_deg   = azimuth_deg,
+            estimated_lat = estimated_lat,
+            lat_confidence= lat_conf,
         )
 
     # Night / star detection
@@ -154,36 +169,131 @@ class OpenCVSolarEstimator:
 
     # Estimation helpers
 
-    @staticmethod
     def _estimate_elevation(
-        sun_x: int | None, sun_y: int | None, h: int, tod: str
+        self, sun_x: int | None, sun_y: int | None, h: int, tod: str,
+        use_crop: bool, img_bgr: np.ndarray,
     ) -> float | None:
         if sun_x is not None and sun_y is not None:
-            horizon_y = h * 0.85
+            horizon_y = self._detect_horizon(img_bgr, h, use_crop)
             rel = max(0.0, min(1.0, (horizon_y - sun_y) / horizon_y))
             return round(rel * 90.0, 1)
         return {"midday": 55.0, "golden_hour": 15.0, "dawn_dusk": 5.0}.get(tod)
 
     @staticmethod
-    def _estimate_lat(
-        elev: float | None, tod: str
-    ) -> tuple[str | None, tuple[float, float] | None]:
-        if elev is None:
-            return "unknown", None
-        if tod != "midday":
-            if elev > 70: return "equatorial", (-30.0, 30.0)
-            if elev > 50: return "unknown",    (-50.0, 50.0)
-            return "unknown", (-70.0, 70.0)
-        # midday: elevation ≈ 90° − |lat − declination|; ±23.5° seasonal variance
-        c = 90.0 - elev
-        lat_min = max(-90.0, round(c - 33.5, 1))
-        lat_max = min( 90.0, round(c + 33.5, 1))
-        lat_mid = (lat_min + lat_max) / 2
-        hem = "north" if lat_mid > 10 else ("south" if lat_mid < -10 else "unknown")
-        return hem, (lat_min, lat_max)
+    def _detect_horizon(img_bgr: np.ndarray, h: int, use_crop: bool) -> float:
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        row_profile = gray.mean(axis=1).astype(np.float32)
+        grad = np.abs(np.diff(row_profile))
+        if len(grad) > 5:
+            kernel = np.hanning(7)
+            kernel /= kernel.sum()
+            smooth = np.convolve(grad, kernel, mode="same") if len(grad) > 7 else grad
+            peak = int(np.argmax(smooth))
+            if peak > h * 0.2:
+                return float(peak)
+        return float(h * 0.85)
 
     @staticmethod
-    def _estimate_season(ct: float, elev: float | None) -> str:
+    def _estimate_azimuth(sun_x: int, img_width: int) -> float:
+        fov_deg = 60.0
+        rel_pos = (sun_x / img_width - 0.5) * 2
+        return round(rel_pos * (fov_deg / 2), 1)
+
+    def _backtrack_location(
+        self, elev_deg: float | None, hour_range: tuple[int, int], tod: str,
+    ) -> tuple[str, tuple[float, float], str, float, float] | None:
+        if elev_deg is None:
+            return None
+        try:
+            from suncalc import get_position
+        except ImportError:
+            return None
+
+        season_dates = [
+            ("summer", 6, 21), ("winter", 12, 21),
+            ("equinox", 3, 20), ("equinox", 9, 22),
+        ]
+
+        if tod == "midday":
+            search_hours = [12, 11, 13, 10, 14]
+        else:
+            lo, hi = hour_range
+            if lo <= hi:
+                search_hours = list(range(max(0, lo), min(24, hi + 1)))
+            else:
+                search_hours = list(range(lo, 24)) + list(range(0, hi + 1))
+            if not search_hours:
+                search_hours = list(range(6, 19))
+
+        candidates: list[tuple[float, float, str]] = []
+        for season_name, month, day in season_dates:
+            for lat_deg in range(-90, 91, 1):
+                for utc_hour in search_hours:
+                    try:
+                        dt = datetime.datetime(2024, month, day, utc_hour, 0, 0)
+                        pos = get_position(dt, 0.0, float(lat_deg))
+                        calc_elev = math.degrees(pos["altitude"])
+                        if calc_elev < 0:
+                            continue
+                        diff = abs(calc_elev - elev_deg)
+                        score = 1.0 - min(diff / 30.0, 1.0)
+                        if score > 0.3:
+                            candidates.append((score, float(lat_deg), season_name))
+                    except Exception:
+                        continue
+
+        if not candidates:
+            return None
+
+        scores_by_lat: dict[float, float] = {}
+        for score, lat, _ in candidates:
+            scores_by_lat[lat] = scores_by_lat.get(lat, 0.0) + score
+
+        sorted_lats = sorted(scores_by_lat.items(), key=lambda x: -x[1])
+        top_lats = sorted_lats[:10]
+
+        total_weight = sum(w for _, w in top_lats)
+        if total_weight == 0:
+            return None
+
+        estimated_lat = sum(lat * w for lat, w in top_lats) / total_weight
+
+        variance = sum(w * (lat - estimated_lat) ** 2 for lat, w in top_lats) / total_weight
+        lat_std = math.sqrt(variance) if variance > 0 else 5.0
+        margin = max(3.0, lat_std * 2)
+        lat_range = (
+            max(-90.0, round(estimated_lat - margin, 1)),
+            min(90.0, round(estimated_lat + margin, 1)),
+        )
+
+        hem = "north" if estimated_lat > 15 else ("south" if estimated_lat < -15 else "equatorial")
+
+        season_counts = Counter(s for _, _, s in candidates)
+        best_season = season_counts.most_common(1)[0][0] if season_counts else "unknown"
+
+        best_score = max(s for s, _, _ in candidates)
+        lat_confidence = round(min(1.0, best_score * 1.5), 2)
+
+        return hem, lat_range, best_season, round(estimated_lat, 2), lat_confidence
+
+    @staticmethod
+    def _fallback_hemisphere(elev: float | None, tod: str) -> str | None:
+        if elev is None or tod != "midday":
+            return None
+        c = 90.0 - elev
+        return "north" if c > 10 else ("south" if c < -10 else "equatorial")
+
+    @staticmethod
+    def _fallback_lat_range(elev: float | None, tod: str) -> tuple[float, float] | None:
+        if elev is None:
+            return None
+        c = 90.0 - elev
+        lat_min = max(-90.0, round(c - 23.5, 1))
+        lat_max = min( 90.0, round(c + 23.5, 1))
+        return (lat_min, lat_max)
+
+    @staticmethod
+    def _fallback_season(ct: float, elev: float | None) -> str:
         if elev is None:            return "unknown"
         if ct < 3500 and elev < 30: return "winter"
         if elev > 55 and ct > 5500: return "summer"
@@ -191,8 +301,12 @@ class OpenCVSolarEstimator:
         return "unknown"
 
     @staticmethod
-    def _confidence(sun_visible: bool, elev: float | None, ct: float) -> float:
-        c = 0.2 + (0.5 if sun_visible else 0.0) + (0.2 if elev is not None else 0.0) + (0.1 if ct != 4000.0 else 0.0)
+    def _confidence(sun_visible: bool, elev: float | None, ct: float, lat_conf: float | None = None) -> float:
+        c = 0.2
+        if sun_visible:   c += 0.3
+        if elev is not None: c += 0.2
+        if ct != 4000.0:  c += 0.1
+        if lat_conf is not None: c += 0.2 * lat_conf
         return round(min(c, 1.0), 2)
 
     @staticmethod

@@ -1,7 +1,7 @@
 """Domain — Solar position estimate."""
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -14,3 +14,7 @@ class SolarEstimate:
     lat_range: tuple[float, float] | None
     season_hint: str | None      # "summer" | "winter" | "equinox" | "unknown"
     confidence: float
+    azimuth_deg: float | None = None
+    estimated_lat: float | None = None
+    estimated_lon: float | None = None
+    lat_confidence: float | None = None

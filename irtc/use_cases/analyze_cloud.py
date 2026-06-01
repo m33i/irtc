@@ -85,7 +85,6 @@ class AnalyzeCloudUseCase:
     ) -> SearchConstraints:
         cov = features.cloud_coverage_pct
 
-        # Night: if stars visible, sky was clear → look for low-cloud satellite tiles
         if solar.time_of_day == "night":
             stars_clear = solar.confidence > 0.8
             return SearchConstraints(
@@ -99,24 +98,13 @@ class AnalyzeCloudUseCase:
             )
 
         lat_range = solar.lat_range
-        if lat_range:
-            lat_range = (max(-90.0, lat_range[0] - 5), min(90.0, lat_range[1] + 5))
 
-        # Solar geometry tightening at midday in known season
-        elev = solar.elevation_deg
-        if (
-            elev is not None
-            and solar.time_of_day == "midday"
-            and solar.season_hint in ("summer", "equinox")
-        ):
-            margin = 6.0
-            if solar.hemisphere in ("north", "unknown"):
-                geo_min = round(max(  0.0, 90.0 - elev - margin), 1)
-                geo_max = round(min( 90.0, 90.0 - elev + 23.5 + margin), 1)
-                lat_range = (
-                    max(lat_range[0], geo_min) if lat_range else geo_min,
-                    min(lat_range[1], geo_max) if lat_range else geo_max,
-                )
+        if solar.estimated_lat is not None:
+            margin = 3.0 if solar.time_of_day == "midday" else 5.0
+            lat_range = (
+                max(-90.0, round(solar.estimated_lat - margin, 1)),
+                min( 90.0, round(solar.estimated_lat + margin, 1)),
+            )
 
         hour_range = solar.hour_range
         if hour_range and hour_range != (0, 24):

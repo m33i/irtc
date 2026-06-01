@@ -61,7 +61,9 @@ class CloudAnalysis:
             f"UTC range:    {self.solar.hour_range[0]}h – {self.solar.hour_range[1]}h",
             f"Hemisphere:   {self.solar.hemisphere or 'unknown'}",
         ]
-        if self.solar.lat_range:
+        if self.solar.estimated_lat is not None:
+            lines.append(f"Est. lat:     {self.solar.estimated_lat}° ± {1 - (self.solar.lat_confidence or 0):.0%}")
+        elif self.solar.lat_range:
             lines.append(f"Est. lat:     {self.solar.lat_range[0]}° to {self.solar.lat_range[1]}°")
         if self.solar.season_hint:
             lines.append(f"Season:       {self.solar.season_hint}")
@@ -104,6 +106,9 @@ class CloudAnalysis:
                 "lat_range": self.solar.lat_range,
                 "season_hint": self.solar.season_hint,
                 "confidence": self.solar.confidence,
+                "azimuth_deg": self.solar.azimuth_deg,
+                "estimated_lat": self.solar.estimated_lat,
+                "lat_confidence": self.solar.lat_confidence,
             },
             "features": {
                 "cloud_coverage_pct": self.features.cloud_coverage_pct,

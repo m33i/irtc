@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from irtc.adapters.dem_horizon import DemHorizonMatcher
 from irtc.adapters.segformer_segmenter import SegformerSkySegmenter
 from irtc.adapters.clip_adapter import ClipAdapter
 from irtc.adapters.opencv_solar import OpenCVSolarEstimator
@@ -29,6 +30,7 @@ _analyze_uc = AnalyzeCloudUseCase(
     classifier        = _clip,
     solar_estimator   = OpenCVSolarEstimator(),
     feature_extractor = _clip,
+    horizon_matcher   = DemHorizonMatcher(),
 )
 _search_uc = SearchSatelliteUseCase(search=StacSatelliteSearch(max_items=150))
 _match_uc  = MatchCandidatesUseCase(matcher=_clip)
@@ -86,7 +88,7 @@ async def analyze(file: UploadFile = File(...)):
         try:
             loop = asyncio.get_event_loop()
 
-            yield send("progress", {"step": 1, "total": 5, "message": "Segmenting sky & analysing clouds..."})
+            yield send("progress", {"step": 1, "total": 6, "message": "Segmenting sky & analysing clouds..."})
             await asyncio.sleep(0)
 
             analysis = await loop.run_in_executor(None, _analyze_uc.execute, tmp_path)

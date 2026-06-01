@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 
 from irtc.domain.cloud import ClassificationResult, SegmentationResult, CloudFeatures
+from irtc.domain.horizon import HorizonMatchResult
 from irtc.domain.solar import SolarEstimate
 
 
@@ -18,6 +19,7 @@ class SearchConstraints:
     cloud_coverage_min: float
     cloud_coverage_max: float
     cloud_level: str
+    lon_range: tuple[float, float] | None = None
 
 
 @dataclass
@@ -29,6 +31,7 @@ class CloudAnalysis:
     solar: SolarEstimate
     features: CloudFeatures
     search_constraints: SearchConstraints
+    horizon_match: HorizonMatchResult | None = None
 
     def summary(self) -> str:
         seg_icon = "neural" if self.segmentation.method == "neural" else "heuristic"
@@ -49,34 +52,24 @@ class CloudAnalysis:
         for name, prob in self.classification.top3:
             lines.append(f"    {name:<16} {'█' * int(prob * 20)} {prob:.0%}")
 
-        lines += [
-            "",
-            "SOLAR POSITION:",
-            f"Sun visible:  {'yes' if self.solar.sun_visible else 'no (gradient)'}",
-        ]
-        if self.solar.elevation_deg is not None:
-            lines.append(f"Elevation:    {self.solar.elevation_deg}°")
-        lines += [
-            f"Time of day:  {self.solar.time_of_day}",
-            f"UTC range:    {self.solar.hour_range[0]}h – {self.solar.hour_range[1]}h",
-            f"Hemisphere:   {self.solar.hemisphere or 'unknown'}",
-        ]
-        if self.solar.estimated_lat is not None:
-            lines.append(f"Est. lat:     {self.solar.estimated_lat}° ± {1 - (self.solar.lat_confidence or 0):.0%}")
-        elif self.solar.lat_range:
-            lines.append(f"Est. lat:     {self.solar.lat_range[0]}° to {self.solar.lat_range[1]}°")
-        if self.solar.season_hint:
-            lines.append(f"Season:       {self.solar.season_hint}")
+        if self.horizon_match and self.horizon_match.matched:
+            hm = self.horizon_match
+            lines += [
+                "",
+                "HORIZON MATCH:",
+                f"Location:   {hm.estimated_lat:.3f}°, {hm.estimated_lon:.3f}°",
+                f"Camera:     facing {hm.camera_azimuth_deg:.0f}°",
+                f"Confidence: {hm.confidence:.0%}",
+            ]
+            if hm.west is not None and hm.east is not None:
+                lines.append(f"FOV:        {hm.west:.0f}° – {hm.east:.0f}°")
 
         lines += [
             "",
-            "FORMATION:",
-            f"Coverage: {self.features.cloud_coverage_pct:.0f}%  ·  "
-            f"Brightness: {self.features.dominant_brightness:.0f}/255  ·  "
-            f"Fingerprint: {len(self.features.embedding)}-dim embedding",
-            "",
             "SEARCH CONSTRAINTS:",
             f"Latitude:  {sc.lat_range or 'global'}",
+            (f"Longitude: {sc.lon_range[0]:.1f}° to {sc.lon_range[1]:.1f}°"
+             if sc.lon_range else ""),
             (f"UTC hour:  {sc.hour_range[0]}h – {sc.hour_range[1]}h"
              if sc.hour_range else "  UTC hour:  any"),
             f"Coverage:  {sc.cloud_coverage_min:.0f}% – {sc.cloud_coverage_max:.0f}%",
@@ -115,8 +108,17 @@ class CloudAnalysis:
                 "dominant_brightness": self.features.dominant_brightness,
                 "embedding_dim": len(self.features.embedding),
             },
+            "horizon_match": {
+                "matched": self.horizon_match.matched if self.horizon_match else False,
+                "estimated_lat": self.horizon_match.estimated_lat if self.horizon_match else None,
+                "estimated_lon": self.horizon_match.estimated_lon if self.horizon_match else None,
+                "camera_azimuth_deg": self.horizon_match.camera_azimuth_deg if self.horizon_match else None,
+                "correlation_score": self.horizon_match.correlation_score if self.horizon_match else None,
+                "confidence": self.horizon_match.confidence if self.horizon_match else None,
+            } if self.horizon_match else None,
             "search_constraints": {
                 "lat_range": sc.lat_range,
+                "lon_range": sc.lon_range,
                 "hour_range": sc.hour_range,
                 "season_hint": sc.season_hint,
                 "hemisphere": sc.hemisphere,

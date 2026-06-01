@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from irtc.adapters.dem_horizon import DemHorizonMatcher
 from irtc.adapters.segformer_segmenter import SegformerSkySegmenter
 from irtc.adapters.clip_adapter import ClipAdapter
 from irtc.adapters.opencv_solar import OpenCVSolarEstimator
@@ -38,6 +39,7 @@ def analyze(image_path: Path, search: bool, output_json: bool, device: str | Non
         classifier        = clip,
         solar_estimator   = OpenCVSolarEstimator(),
         feature_extractor = clip,
+        horizon_matcher   = DemHorizonMatcher(),
     )
     analysis = analyze_uc.execute(image_path)
 
